@@ -19,10 +19,15 @@ typedef struct
   float x, y, r, g, b;
 }Vertex;
 
-static const Vertex vertices[3] = {
-  {0.0f, -0.5f, 1.0f, 0.0f, 0.0f},
-  {0.5f, 0.5f, 0.0f, 1.0f, 0.0f},
-  {-0.5f, 0.5f, 0.0f, 0.0f, 1.0f},
+static const Vertex vertices[4] = {
+  {-0.5f, -0.5f, 1.0f, 0.0f, 0.0f},
+  {0.5f, -0.5f, 0.0f, 1.0f, 0.0f},
+  {0.5f, 0.5f, 0.0f, 0.0f, 1.0f},
+  {-0.5f, 0.5f, 1.0f, 1.0f, 1.0f},
+};
+
+static const uint16_t indices[6] = {
+  0, 1, 2, 2, 3, 0,
 };
 
 #define QUEUE_COUNT 2
@@ -66,6 +71,8 @@ VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
 VkFence in_flight_fences[MAX_FRAMES_IN_FLIGHT];
 VkBuffer vertex_buffer;
 VkDeviceMemory vertex_buffer_mem;
+VkBuffer index_buffer;
+VkDeviceMemory index_buffer_mem;
 bool framebuffer_resized = false;
 
 static bool check_for_validation_layers();
@@ -80,7 +87,9 @@ static void create_graphics_pipeline();
 static void create_framebuffers();
 static void create_command_buffers();
 static void create_command_pool();
+static void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage_flags, VkMemoryPropertyFlags mem_flags, VkBuffer *buffer, VkDeviceMemory *buffer_mem);
 static void create_vertex_buffer();
+static void create_index_buffer();
 static void create_sync_prims();
 static void recreate_swap_chain();
 static void cleanup_swap_chain();
@@ -112,6 +121,7 @@ void init_vulkan()
   create_framebuffers();
   create_command_pool();
   create_vertex_buffer();
+  create_index_buffer();
   create_command_buffers();
   create_sync_prims();
 }
@@ -720,12 +730,6 @@ void record_command_buffer(VkCommandBuffer command_buffer, uint32_t index)
   vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
   vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
-  VkBuffer vertex_buffers[] = {vertex_buffer};
-  VkDeviceSize offsets[] = {0};
-  vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, offsets);
-
-  vkCmdDraw(command_buffer, (uint32_t) sizeof(vertices), 1, 0, 0);
-
   VkViewport viewport = {
     .x = 0.0f,
     .y = 0.0f,
@@ -734,16 +738,19 @@ void record_command_buffer(VkCommandBuffer command_buffer, uint32_t index)
     .minDepth = 0.0f,
     .maxDepth = 1.0f,
   };
-  
   vkCmdSetViewport(command_buffer, 0, 1, &viewport);
   
   VkRect2D scissor = {
     .offset = (VkOffset2D) {.x = 0, .y = 0},
     .extent = swap_chain_extent,
   };
-  
   vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-  vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+  VkBuffer vertex_buffers[] = {vertex_buffer};
+  VkDeviceSize offsets[] = {0};
+  vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, offsets);
+  vkCmdBindIndexBuffer(command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT16);
+  vkCmdDrawIndexed(command_buffer, (uint32_t) (sizeof(indices)/sizeof(uint16_t)), 1, 0, 0, 0);
   vkCmdEndRenderPass(command_buffer);
 
   if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
@@ -813,22 +820,22 @@ void draw_frame()
   current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void create_vertex_buffer()
+void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage_flags, VkMemoryPropertyFlags mem_flags, VkBuffer *buffer, VkDeviceMemory *buffer_mem)
 {
   VkBufferCreateInfo buffer_info = {
     .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-    .size = sizeof(vertices),
-    .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    .size = size,
+    .usage = usage_flags,
     .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
   };
 
-  if (vkCreateBuffer(logical_device, &buffer_info, NULL, &vertex_buffer) != VK_SUCCESS) {
-    fprintf(stderr, "ERROR: Failed to create vertex buffer\n");
+  if (vkCreateBuffer(logical_device, &buffer_info, NULL, buffer) != VK_SUCCESS) {
+    fprintf(stderr, "ERROR: Failed to create buffer\n");
     exit(1);
   }
 
   VkMemoryRequirements mem_reqs;
-  vkGetBufferMemoryRequirements(logical_device, vertex_buffer, &mem_reqs);
+  vkGetBufferMemoryRequirements(logical_device, *buffer, &mem_reqs);
 
   VkPhysicalDeviceMemoryProperties mem_properties;
   vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
@@ -836,9 +843,8 @@ void create_vertex_buffer()
   bool found = false;
   uint32_t mem_index;
   uint32_t type_filter = mem_reqs.memoryTypeBits;
-  VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
   for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
-    if ((type_filter & (1 << i)) && (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+    if ((type_filter & (1 << i)) && (mem_properties.memoryTypes[i].propertyFlags & mem_flags) == mem_flags) {
       found = true;
       mem_index = i;
       break;
@@ -856,17 +862,91 @@ void create_vertex_buffer()
     .memoryTypeIndex = mem_index,
   };
 
-  if (vkAllocateMemory(logical_device, &alloc_info, NULL, &vertex_buffer_mem) != VK_SUCCESS) {
+  if (vkAllocateMemory(logical_device, &alloc_info, NULL, buffer_mem) != VK_SUCCESS) {
     fprintf(stderr, "ERROR: Failed to allocate vertex buffer memory\n");
     exit(1);
   }
-  vkBindBufferMemory(logical_device, vertex_buffer, vertex_buffer_mem, 0);
+  
+  vkBindBufferMemory(logical_device, *buffer, *buffer_mem, 0);
+  
+}
+void copy_buffer(VkBuffer src_buffer, VkBuffer dst_buffer, VkDeviceSize size)
+{
+  VkCommandBufferAllocateInfo alloc_info = {
+    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+    .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+    .commandPool = command_pool,
+    .commandBufferCount = 1,
+  };
+
+  VkCommandBuffer command_buffer;
+  vkAllocateCommandBuffers(logical_device, &alloc_info, &command_buffer);
+
+  VkCommandBufferBeginInfo begin_info = {
+    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+
+  vkBeginCommandBuffer(command_buffer, &begin_info);
+
+  VkBufferCopy copy_region = {
+    .size = size,
+  };
+  vkCmdCopyBuffer(command_buffer, src_buffer, dst_buffer, 1, &copy_region);
+  vkEndCommandBuffer(command_buffer);
+
+  VkSubmitInfo submit_info = {
+    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+    .commandBufferCount = 1,
+    .pCommandBuffers = &command_buffer,
+  };
+  
+  vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+  vkQueueWaitIdle(graphics_queue);
+
+  vkFreeCommandBuffers(logical_device, command_pool, 1, &command_buffer);
+}
+
+void create_vertex_buffer()
+{
+  VkDeviceSize buffer_size = sizeof(vertices);
+
+  VkBuffer staging_buffer;
+  VkDeviceMemory staging_buffer_mem;
+  create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging_buffer, &staging_buffer_mem);
 
   void* data;
-  vkMapMemory(logical_device, vertex_buffer_mem, 0, buffer_info.size, 0, &data);
-  memcpy(data, vertices, (size_t) buffer_info.size);
-  vkUnmapMemory(logical_device, vertex_buffer_mem);
+  vkMapMemory(logical_device, staging_buffer_mem, 0, (size_t) buffer_size, 0, &data);
+  memcpy(data, vertices, (size_t) buffer_size);
+  vkUnmapMemory(logical_device, staging_buffer_mem);
 
+  create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vertex_buffer, &vertex_buffer_mem);
+
+  copy_buffer(staging_buffer, vertex_buffer, buffer_size);
+
+  vkDestroyBuffer(logical_device, staging_buffer, NULL);
+  vkFreeMemory(logical_device, staging_buffer_mem, NULL);
+}
+
+void create_index_buffer()
+{
+  VkDeviceSize buffer_size = sizeof(indices);
+
+  VkBuffer staging_buffer;
+  VkDeviceMemory staging_buffer_mem;
+  create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging_buffer, &staging_buffer_mem);
+
+  void* data;
+  vkMapMemory(logical_device, staging_buffer_mem, 0, buffer_size, 0, &data);
+  memcpy(data, indices, (size_t) buffer_size);
+  vkUnmapMemory(logical_device, staging_buffer_mem);
+
+  create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &index_buffer, &index_buffer_mem);
+
+  copy_buffer(staging_buffer, index_buffer, buffer_size);
+
+  vkDestroyBuffer(logical_device, staging_buffer, NULL);
+  vkFreeMemory(logical_device, staging_buffer_mem, NULL);
 }
 
 void main_loop()
@@ -909,6 +989,8 @@ void cleanup_swap_chain()
 void cleanup()
 {
   cleanup_swap_chain();
+  vkDestroyBuffer(logical_device, index_buffer, NULL);
+  vkFreeMemory(logical_device, index_buffer_mem, NULL);
   vkDestroyBuffer(logical_device, vertex_buffer, NULL);
   vkFreeMemory(logical_device, vertex_buffer_mem, NULL);
   vkDestroyPipeline(logical_device, graphics_pipeline, NULL);

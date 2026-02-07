@@ -2,7 +2,7 @@ TARGET = vk_template
 SRCS = main.c util.c
 INC_DIRS = -I./external/cglm/include
 CFLAGS = -Wall -Wextra -ggdb
-LINK_LIBS = -lglfw -lvulkan
+LINK_LIBS = -lm -lglfw -lvulkan
 DEBUG = -DDEBUG
 
 all: sources shader

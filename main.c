@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+#include <math.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -20,6 +21,13 @@ typedef struct
   vec2 position;
   vec3 color;
 }Vertex;
+
+typedef struct
+{
+  mat4 model;
+  mat4 view;
+  mat4 proj;
+}UniformBufferObject;
 
 static const Vertex vertices[4] = {
   {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
@@ -64,6 +72,7 @@ VkExtent2D swap_chain_extent;
 VkImageView swap_chain_img_views[MAX_SWAP_CHAIN_IMGS];
 VkFramebuffer swap_chain_framebuffers[MAX_SWAP_CHAIN_IMGS];
 VkRenderPass render_pass;
+VkDescriptorSetLayout desc_set_layout;
 VkPipelineLayout pipeline_layout;
 VkPipeline graphics_pipeline;
 VkCommandPool command_pool;
@@ -76,6 +85,12 @@ VkDeviceMemory vertex_buffer_mem;
 VkBuffer index_buffer;
 VkDeviceMemory index_buffer_mem;
 bool framebuffer_resized = false;
+VkBuffer uniform_buffers[MAX_FRAMES_IN_FLIGHT];
+VkDeviceMemory uniform_buffers_mem[MAX_FRAMES_IN_FLIGHT];
+void * uniform_buffers_mapped[MAX_FRAMES_IN_FLIGHT];
+VkDescriptorPool desc_pool;
+VkDescriptorSet desc_sets[MAX_FRAMES_IN_FLIGHT];
+uint32_t current_frame = 0;
 
 static bool check_for_validation_layers();
 static void create_instance();
@@ -85,6 +100,7 @@ static void create_logical_device();
 static void create_swap_chain();
 static void create_img_views();
 static void create_render_pass();
+static void create_desc_set_layout();
 static void create_graphics_pipeline();
 static void create_framebuffers();
 static void create_command_buffers();
@@ -92,6 +108,9 @@ static void create_command_pool();
 static void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage_flags, VkMemoryPropertyFlags mem_flags, VkBuffer *buffer, VkDeviceMemory *buffer_mem);
 static void create_vertex_buffer();
 static void create_index_buffer();
+static void create_uniform_buffers();
+static void create_desc_pool();
+static void create_desc_sets();
 static void create_sync_prims();
 static void recreate_swap_chain();
 static void cleanup_swap_chain();
@@ -119,11 +138,15 @@ void init_vulkan()
   create_swap_chain();
   create_img_views();
   create_render_pass();
+  create_desc_set_layout();
   create_graphics_pipeline();
   create_framebuffers();
   create_command_pool();
   create_vertex_buffer();
   create_index_buffer();
+  create_uniform_buffers();
+  create_desc_pool();
+  create_desc_sets();
   create_command_buffers();
   create_sync_prims();
 }
@@ -459,6 +482,28 @@ void create_render_pass()
   }
 }
 
+void create_desc_set_layout()
+{
+  VkDescriptorSetLayoutBinding ubo_layout = {
+    .binding = 0,
+    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    .descriptorCount = 1,
+    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+  };
+
+  VkDescriptorSetLayoutCreateInfo layout_info = {
+    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+    .bindingCount = 1,
+    .pBindings = &ubo_layout,
+  };
+
+  if (vkCreateDescriptorSetLayout(logical_device, &layout_info, NULL, &desc_set_layout) != VK_SUCCESS) {
+    fprintf(stderr, "ERROR: Failed to create descriptor set layout\n");
+    exit(1);
+  }
+
+}
+
 void create_graphics_pipeline()
 {
   FileInfo vert_source = get_file_info("./shaders/vert.spv");
@@ -545,7 +590,7 @@ void create_graphics_pipeline()
     .polygonMode = VK_POLYGON_MODE_FILL,
     .lineWidth = 1.0f,
     .cullMode = VK_CULL_MODE_BACK_BIT,
-    .frontFace = VK_FRONT_FACE_CLOCKWISE,
+    .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
     .depthBiasEnable = VK_FALSE,
   };
 
@@ -585,8 +630,8 @@ void create_graphics_pipeline()
 
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-    .setLayoutCount = 0,
-    .pushConstantRangeCount = 0,
+    .setLayoutCount = 1,
+    .pSetLayouts = &desc_set_layout,
   };
 
   if (vkCreatePipelineLayout(logical_device, &pipeline_layout_info, NULL, &pipeline_layout) != VK_SUCCESS) {
@@ -764,6 +809,7 @@ void record_command_buffer(VkCommandBuffer command_buffer, uint32_t index)
   VkDeviceSize offsets[] = {0};
   vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, offsets);
   vkCmdBindIndexBuffer(command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT16);
+  vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &desc_sets[current_frame], 0, NULL);
   vkCmdDrawIndexed(command_buffer, (uint32_t) (sizeof(indices)/sizeof(uint16_t)), 1, 0, 0, 0);
   vkCmdEndRenderPass(command_buffer);
 
@@ -772,9 +818,24 @@ void record_command_buffer(VkCommandBuffer command_buffer, uint32_t index)
   }
 }
 
+#define DELTA_ROT .0001
+void update_uniform_buffer(uint32_t current_frame)
+{
+  static float angle = 0.0f;
+  angle = fmodf((angle + DELTA_ROT), 360.0f);
+  UniformBufferObject ubo = {0};
+  /* ubo.model = GLM_MAT4_IDENTITY_INIT; */
+  glm_mat4_identity(ubo.model);
+  glm_rotate(ubo.model, angle, (vec3) {0.0f, 0.0f, 1.0f});
+  glm_lookat((vec3) {2.0f, 2.0f, 2.0f}, (vec3) {0.0f, 0.0f, 0.0f}, (vec3) {0.0f, 0.0f, 1.0f}, ubo.view);
+  glm_perspective(45.0f, swap_chain_extent.width / (float) swap_chain_extent.height, 0.1f, 10.0f, ubo.proj);
+  ubo.proj[1][1] *= -1;
+  memcpy(uniform_buffers_mapped[current_frame], &ubo, sizeof(ubo));
+
+}
+
 void draw_frame()
 {
-  static uint32_t current_frame = 0;
   vkWaitForFences(logical_device, 1, &in_flight_fences[current_frame], VK_TRUE, UINT64_MAX);
 
   uint32_t img_index;
@@ -787,6 +848,8 @@ void draw_frame()
     fprintf(stderr, "WARNING: Failed to acquire swap chain image\n");
     return;
   }
+
+  update_uniform_buffer(current_frame);
 
   vkResetFences(logical_device, 1, &in_flight_fences[current_frame]);
   
@@ -963,6 +1026,76 @@ void create_index_buffer()
   vkFreeMemory(logical_device, staging_buffer_mem, NULL);
 }
 
+void create_uniform_buffers()
+{
+  VkDeviceSize buffer_size = sizeof(UniformBufferObject);
+  for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    create_buffer(buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &uniform_buffers[i], &uniform_buffers_mem[i]);
+    vkMapMemory(logical_device, uniform_buffers_mem[i], 0, buffer_size, 0, &uniform_buffers_mapped[i]);
+  }
+}
+
+void create_desc_pool()
+{
+  VkDescriptorPoolSize pool_size = {
+    .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    .descriptorCount = (uint32_t) MAX_FRAMES_IN_FLIGHT,
+  };
+
+  VkDescriptorPoolCreateInfo pool_info = {
+    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+    .poolSizeCount = 1,
+    .pPoolSizes = &pool_size,
+    .maxSets = (uint32_t) MAX_FRAMES_IN_FLIGHT,
+  };
+
+  if (vkCreateDescriptorPool(logical_device, &pool_info, NULL, &desc_pool) != VK_SUCCESS) {
+    fprintf(stderr, "ERROR: Failed to create descriptor pool\n");
+    exit(1);
+  }
+  
+}
+
+void create_desc_sets()
+{
+  VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+  for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    layouts[i] = desc_set_layout;
+  }
+  VkDescriptorSetAllocateInfo alloc_info = {
+    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+    .descriptorPool = desc_pool,
+    .descriptorSetCount = (uint32_t) MAX_FRAMES_IN_FLIGHT,
+    .pSetLayouts = layouts,
+  };
+
+  if (vkAllocateDescriptorSets(logical_device, &alloc_info, desc_sets) != VK_SUCCESS) {
+    fprintf(stderr, "ERROR: Failed to allocate descriptor sets\n");
+    exit(1);
+  }
+
+  for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    VkDescriptorBufferInfo buffer_info = {
+      .buffer = uniform_buffers[i],
+      .offset = 0,
+      .range = sizeof(UniformBufferObject),
+    };
+
+    VkWriteDescriptorSet descriptor_write = {
+      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      .dstSet = desc_sets[i],
+      .dstBinding = 0,
+      .dstArrayElement = 0,
+      .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+      .descriptorCount = 1,
+      .pBufferInfo = &buffer_info,
+    };
+
+    vkUpdateDescriptorSets(logical_device, 1, &descriptor_write, 0, NULL);
+  }
+}
+
+
 void main_loop()
 {
   while (!glfwWindowShouldClose(window)) {
@@ -1003,10 +1136,13 @@ void cleanup_swap_chain()
 void cleanup()
 {
   cleanup_swap_chain();
+  vkDestroyDescriptorSetLayout(logical_device, desc_set_layout, NULL);
   vkDestroyBuffer(logical_device, index_buffer, NULL);
   vkFreeMemory(logical_device, index_buffer_mem, NULL);
   vkDestroyBuffer(logical_device, vertex_buffer, NULL);
   vkFreeMemory(logical_device, vertex_buffer_mem, NULL);
+  vkDestroyDescriptorPool(logical_device, desc_pool, NULL);
+  vkDestroyDescriptorSetLayout(logical_device, desc_set_layout, NULL);
   vkDestroyPipeline(logical_device, graphics_pipeline, NULL);
   vkDestroyPipelineLayout(logical_device, pipeline_layout, NULL);
   vkDestroyRenderPass(logical_device, render_pass, NULL);
@@ -1014,7 +1150,10 @@ void cleanup()
     vkDestroySemaphore(logical_device, img_available_semaphores[i], NULL);
     vkDestroySemaphore(logical_device, render_finished_semaphores[i], NULL);
     vkDestroyFence(logical_device, in_flight_fences[i], NULL);
+    vkDestroyBuffer(logical_device, uniform_buffers[i], NULL);
+    vkFreeMemory(logical_device, uniform_buffers_mem[i], NULL);
   }
+  vkDestroyDescriptorSetLayout(logical_device, desc_set_layout, NULL);
   vkDestroyCommandPool(logical_device, command_pool, NULL);
   vkDestroyDevice(logical_device, NULL);
   vkDestroySurfaceKHR(instance, surface, NULL);

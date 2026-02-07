@@ -230,7 +230,7 @@ void create_logical_device()
   
   long indices[QUEUE_COUNT] = {queue_indices.graphics_index, queue_indices.presentation_index};
   VkDeviceQueueCreateInfo queue_create_infos[QUEUE_COUNT];
-
+  uint32_t queue_count = 0;
   float queue_priority = 1.0f;
   for (size_t i = 0; i < QUEUE_COUNT; ++i) {
     VkDeviceQueueCreateInfo queue_create_info = {
@@ -239,14 +239,26 @@ void create_logical_device()
       .queueCount = 1,
       .pQueuePriorities = &queue_priority,
     };
-    queue_create_infos[i] = queue_create_info;
+
+    bool unique = true;
+    for (size_t j = 0; j < i; ++j) {
+      if (queue_create_infos[j].queueFamilyIndex == indices[i]) {
+	unique = false;
+	break;
+      }
+    }
+
+    if (unique) {
+      queue_create_infos[i] = queue_create_info;
+      ++queue_count;
+    }
   }
-  
+
   VkPhysicalDeviceFeatures device_features = {0};
 
   VkDeviceCreateInfo create_info = {
     .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-    .queueCreateInfoCount = 2,
+    .queueCreateInfoCount = queue_count,
     .pQueueCreateInfos = queue_create_infos,
     .pEnabledFeatures = &device_features,
 #ifdef DEBUG

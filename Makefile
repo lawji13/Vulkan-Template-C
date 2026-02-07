@@ -1,5 +1,6 @@
 TARGET = vk_template
 SRCS = main.c util.c
+INC_DIRS = -I./external/cglm/include
 CFLAGS = -Wall -Wextra -ggdb
 LINK_LIBS = -lglfw -lvulkan
 DEBUG = -DDEBUG
@@ -7,7 +8,7 @@ DEBUG = -DDEBUG
 all: sources shader
 
 sources: $(SRCS)
-	cc -o $(TARGET) $(SRCS) $(CFLAGS) $(LINK_LIBS) $(DEBUG)
+	cc -o $(TARGET) $(SRCS) $(CFLAGS) $(INC_DIRS) $(LINK_LIBS) $(DEBUG)
 
 shader: shaders/shader.*
 	glslc shaders/shader.vert -o shaders/vert.spv

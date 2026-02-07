@@ -8,6 +8,7 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#include "cglm/cglm.h"
 #include "util.h"
 
 #define WIDTH 800
@@ -16,14 +17,15 @@
 
 typedef struct
 {
-  float x, y, r, g, b;
+  vec2 position;
+  vec3 color;
 }Vertex;
 
 static const Vertex vertices[4] = {
-  {-0.5f, -0.5f, 1.0f, 0.0f, 0.0f},
-  {0.5f, -0.5f, 0.0f, 1.0f, 0.0f},
-  {0.5f, 0.5f, 0.0f, 0.0f, 1.0f},
-  {-0.5f, 0.5f, 1.0f, 1.0f, 1.0f},
+  {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+  {{0.5f, -0.5f},  {0.0f, 1.0f, 0.0f}},
+  {{0.5f, 0.5f},   {0.0f, 0.0f, 1.0f}},
+  {{-0.5f, 0.5f},  {1.0f, 1.0f, 1.0f}},
 };
 
 static const uint16_t indices[6] = {
